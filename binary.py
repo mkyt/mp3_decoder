@@ -33,14 +33,31 @@ def _reshape(vals, shape):
 
 
 class Field:
-    def __init__(self, bits, klass=None, shape=1):
-        self.bits = bits
+    def __init__(self, n_bits, klass=None, shape=1):
+        self.bits = n_bits
         self.klass = klass
         if isinstance(shape, int):
             shape = (shape, )
         self.shape = shape
         self.n_elems = _product(self.shape)
         self.whole_bits = self.bits * self.n_elems
+
+
+    def _unpack_one(self, reader):
+        v = reader.get(self.bits)
+        if self.klass:
+            v = self.klass(v)
+        return v
+
+
+    def unpack(self, reader):
+        if self.shape != (1, ): # array-like
+            vv = []
+            for _ in range(self.n_elems):
+                vv.append(self._unpack_one(reader))
+            return _reshape(vv, self.shape)
+        else: # scalar
+            return self._unpack_one(reader)
 
 
 class BitsMeta(type):
@@ -139,18 +156,7 @@ class BitfieldBase(metaclass=BitsMeta):
         for k in klass._entries:
             init_offset = self.reader.offset
             item = getattr(klass, k)
-            if item.shape != (1, ): # array-like
-                vv = []
-                for _ in range(item.n_elems):
-                    v = self.reader.get(item.bits)
-                    if item.klass:
-                        v = item.klass(v)
-                    vv.append(v)
-                v = _reshape(vv, item.shape)
-            else: # scalar
-                v = self.reader.get(item.bits)
-                if item.klass:
-                    v = item.klass(v)
+            v = item.unpack(self.reader)
             log[k] = LogEntry(init_offset, item.whole_bits)
             setattr(self, k, v)
         self._log = log
