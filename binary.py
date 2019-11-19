@@ -32,6 +32,34 @@ def _reshape(vals, shape):
         return res
 
 
+class BitsParserBase:
+    def __init__(self, reader):
+        self.reader = reader
+        self._log = {}
+        self._entries = []
+
+    def set_field(self, name, field):
+        self._entries.append(name)
+        self._log[name] = LogEntry(self.reader.offset, field.whole_bits)
+        setattr(self, name, field.unpack(self.reader))
+
+    def set_fields(self, fields_dict):
+        for name, field in fields_dict.items():
+            self.set_field(name, field)
+
+    def dbg(self, k=None):
+        def info(k):
+            log = self._log[k]
+            frm = log.offset
+            siz = log.size
+            return '{}: value={}, offset={}, bits={}'.format(k, repr(getattr(self, k)), frm, siz)
+        if k:
+            print(info(k))
+        else:
+            for k in self._entries:
+                print(info(k))
+
+
 class Field:
     def __init__(self, n_bits, klass=None, shape=1):
         self.bits = n_bits
@@ -44,10 +72,13 @@ class Field:
 
 
     def _unpack_one(self, reader):
-        v = reader.get(self.bits)
-        if self.klass:
-            v = self.klass(v)
-        return v
+        if self.klass is not None and issubclass(self.klass, BitsParserBase):
+            return self.klass(reader)
+        else:
+            v = reader.get(self.bits)
+            if self.klass:
+                v = self.klass(v)
+            return v
 
 
     def unpack(self, reader):
@@ -60,32 +91,20 @@ class Field:
             return self._unpack_one(reader)
 
 
-class BitsMeta(type):
-    def __new__(meta, name, bases, d):
-        entries = []
-        for k, v in d.items():
-            if isinstance(v, Field):
-                entries.append(k)
-        d['_entries'] = entries
-        return super().__new__(meta, name, bases, d)
-
-
 class Bits:
-    def __init__(self, buf, offset, size=-1):
+    def __init__(self, buf, offset=0, size=-1):
         if isinstance(buf, bytes):
             if size == -1:
-                self.backing = buf[offset:] # backing buffer (bytes)
-                self.size = size # in bits (-1 if unknown)
-            else:
-                self.backing = buf[offset:offset+size]
-                self.size = size * 8
+                size = len(buf) - offset
+            self.backing = buf[offset:offset+size] # backing buffer (bytes)
+            self.size = size * 8 # in bits (-1 if unknown)
             self.bit_offset = 0 # in bits
         elif isinstance(buf, self.__class__):
             self.backing = buf.backing
             self.bit_offset = buf.bit_offset + offset
             self.size = size
 
-    def trim(self, st, ed):
+    def trim(self, st, ed): # semi-open interval [st, ed)
         return self.__class__(self, st, ed - st)
     
     def __int__(self):
@@ -133,7 +152,17 @@ class BitsReader:
         return int(portion)
 
 
-class BitfieldBase(metaclass=BitsMeta):
+class BitfieldMeta(type):
+    def __new__(meta, name, bases, d):
+        entries = []
+        for k, v in d.items():
+            if isinstance(v, Field):
+                entries.append(k)
+        d['_entries'] = entries
+        return super().__new__(meta, name, bases, d)
+
+
+class BitfieldBase(metaclass=BitfieldMeta):
     def __init__(self, buffer):
         klass = self.__class__
         offset = 0
@@ -290,6 +319,7 @@ class BinaryBase(metaclass=BinaryMeta):
 
 
 __all__ = [
+    'BitsParserBase',
     'Field',
     'Bits',
     'BitsReader',

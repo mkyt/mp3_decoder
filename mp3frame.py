@@ -1,7 +1,7 @@
 from enum import IntEnum
 import struct
 
-from binary import BitfieldBase, Field
+from binary import BitsParserBase, BitfieldBase, Field, Bits, BitsReader
 
 
 class MPEGAudioVersionID(IntEnum):
@@ -95,16 +95,108 @@ class MP3FrameHeader(BitfieldBase):
         return 1 if self.channel_mode == ChannelMode.SINGLE_CHANNEL else 2
 
 
+class BlockWindowType(IntEnum):
+    NORMAL = 0
+    START = 1
+    SHORT = 2
+    END = 3
+
+
+class SideInfoForGranule(BitsParserBase):
+    '''sideinfo for each granule
+    
+    length: 59 bits (34 + 22 + 3)
+
+    '''
+    bits = 59
+
+    pre_fields = { # 34 bits
+        'part2_3_length': Field(12),
+        'big_values': Field(9),
+        'global_gain': Field(8),
+        'scalefac_compress': Field(4),
+        'win_switch_flag': Field(1, bool)
+    }
+
+    non_normal_window = { # 22 bits : 2 + 1 + 10(5x2) + 9(3x3)
+        'block_type': Field(2, BlockWindowType),
+        'mixed_block_flag': Field(1, bool),
+        'table_select': Field(5, shape=2),
+        'subblock_gain': Field(3, shape=3)            
+    }
+
+    normal_window = { # 22 bits : 15(5x3) + 4 + 3
+        'table_select': Field(5, shape=3),
+        'region0_count': Field(4),
+        'region1_count': Field(3)
+    }
+
+    rest_fields = { # 3 bits
+        'preflag': Field(1, bool),
+        'scalefac_scale': Field(1),
+        'count1table_select': Field(1)
+    }
+
+    slen_table = {
+        0: (0, 0),
+        1: (0, 1),
+        2: (0, 2),
+        3: (0, 3),
+        4: (3, 0),
+        5: (1, 1),
+        6: (1, 2),
+        7: (1, 3),
+        8: (2, 1),
+        9: (2, 2),
+        10: (2, 3),
+        11: (3, 1),
+        12: (3, 2),
+        13: (3, 3),
+        14: (4, 2),
+        15: (4, 3)
+    }
+
+    def __init__(self, reader):
+        super().__init__(reader)
+
+        self.set_fields(self.pre_fields)
+
+        if self.win_switch_flag:
+            self.set_fields(self.non_normal_window)
+        else:
+            self.set_fields(self.normal_window)
+            self.block_type = BlockWindowType.NORMAL
+
+        self.set_fields(self.rest_fields)
+
+        self.slen1, self.slen2 = self.slen_table[self.scalefac_compress]
+
+
 class MP3SideInfoMono(BitfieldBase):
+    '''Sideinfo for mono frame
+
+    17 bytes = 136 bits (9 + 5 + 4 + 59 * 2)
+    '''
+    size = 17 # in bytes
+
     main_data_begin = Field(9)
     private_bits = Field(5)
     scale_factor_selection_info = Field(1, shape=(1,4))
+    granules = Field(59, SideInfoForGranule, shape=(2,1)) # gr,ch
 
 
 class MP3SideInfoStereo(BitfieldBase):
+    '''Sideinfo for stereo frame
+
+    32 bytes = 256 bits (9 + 3 + 8(4*2) + 59 * 2 * 2)
+
+    '''
+    size = 32 # in bytes
+
     main_data_begin = Field(9)
     private_bits = Field(3)
     scale_factor_selection_info = Field(1, shape=(2,4))
+    granules = Field(59, SideInfoForGranule, shape=(2,2)) # gr,ch
 
 
 class MP3Frame:
